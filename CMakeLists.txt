@@ -55,8 +55,19 @@ if(SPITE_D_HAVE_OPEN_SPITE)
   target_link_libraries(spite_d_validity PUBLIC spite_d_core open_spite)
 endif()
 
-# Perception core (map_manager port) is added once the port lands:
-# add_library(spite_d_perception src/perception/...)
+# Perception core: UV-map detector + box tracker (map_manager port).
+# OpenCV: brew on macOS, ROS-provided on Linux.
+find_package(OpenCV QUIET COMPONENTS core imgproc)
+if(OpenCV_FOUND)
+  add_library(spite_d_perception
+    src/perception/uv_detector.cpp
+    src/perception/box_tracker.cpp
+  )
+  target_link_libraries(spite_d_perception
+    PUBLIC spite_d_core opencv_core opencv_imgproc)
+else()
+  message(STATUS "spite_d: perception skipped (OpenCV not found)")
+endif()
 
 # ---------------------------------------------------------------------------
 # Offline tools
