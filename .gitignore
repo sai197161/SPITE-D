@@ -1,0 +1,5 @@
+# Local CMake build trees (core-mode builds on macOS)
+build*/
+
+# Editor / OS noise
+.DS_Store
