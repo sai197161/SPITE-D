@@ -37,6 +37,7 @@
 
 #include <array>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -259,6 +260,13 @@ int main(int argc, char** argv) {
             {opt.envHi, opt.envHi, opt.envHi});
 
   // ---- Serialize.
+  std::error_code ec;
+  std::filesystem::create_directories(opt.outDir, ec);
+  if (ec) {
+    std::cerr << "FATAL: cannot create output dir " << opt.outDir << ": "
+              << ec.message() << "\n";
+    return 1;
+  }
   const std::string graphPath = opt.outDir + "/roadmap_graph.txt";
   const std::string geomPath = opt.outDir + "/roadmap_geoms.txt";
   if (!spite_d::WriteRoadmapGraph(graph, graphPath)) {
