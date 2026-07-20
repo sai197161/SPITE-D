@@ -1,1 +1,0 @@
-// spite/high_level_collision_check.cpp

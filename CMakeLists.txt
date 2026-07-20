@@ -1,9 +1,156 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.20)
 project(spite_d)
 
-find_package(ament_cmake REQUIRED)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-install(DIRECTORY launch gazebo rviz
-        DESTINATION share/${PROJECT_NAME})
+# ---------------------------------------------------------------------------
+# Dual-mode build.
+#
+# ROS mode (Linux): built by colcon; ament_cmake is present. Builds message
+#   interfaces, core libraries, and node executables.
+# Core mode (macOS dev): plain CMake; ament is absent. Builds only the
+#   ROS-free core libraries, offline tools, and unit tests so the pipeline
+#   logic can be developed and tested without a ROS installation.
+#     cmake -B build -DSPITE_D_OPEN_SPITE_DIR=/path/to/open-spite \
+#           -DCMAKE_TOOLCHAIN_FILE=/path/to/open-spite/build/conan_toolchain.cmake
+# ---------------------------------------------------------------------------
+find_package(ament_cmake QUIET)
 
-ament_package()
+# open-spite: consumed as a subdirectory. Its CGAL dependency must be
+# resolvable (conan toolchain on macOS, system CGAL on the Linux box).
+set(SPITE_D_OPEN_SPITE_DIR "" CACHE PATH "Path to the open-spite source tree")
+if(SPITE_D_OPEN_SPITE_DIR)
+  add_subdirectory(${SPITE_D_OPEN_SPITE_DIR} open_spite_build EXCLUDE_FROM_ALL)
+  set(SPITE_D_HAVE_OPEN_SPITE TRUE)
+else()
+  message(STATUS "spite_d: SPITE_D_OPEN_SPITE_DIR not set; spite/planner cores skipped")
+  set(SPITE_D_HAVE_OPEN_SPITE FALSE)
+endif()
+
+# ---------------------------------------------------------------------------
+# Core libraries (ROS-free)
+# ---------------------------------------------------------------------------
+add_library(spite_d_core INTERFACE)
+target_include_directories(spite_d_core INTERFACE
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+add_library(spite_d_trajectory
+  src/trajectory/constant_velocity_predictor.cpp
+)
+target_link_libraries(spite_d_trajectory PUBLIC spite_d_core)
+
+add_library(spite_d_planner
+  src/planner/replanner.cpp
+  src/planner/roadmap_io.cpp
+)
+target_link_libraries(spite_d_planner PUBLIC spite_d_core)
+
+if(SPITE_D_HAVE_OPEN_SPITE)
+  add_library(spite_d_validity
+    src/spite/validity_server.cpp
+  )
+  target_link_libraries(spite_d_validity PUBLIC spite_d_core open_spite)
+endif()
+
+# Perception core: UV-map detector + box tracker (map_manager port).
+# OpenCV: brew on macOS, ROS-provided on Linux.
+find_package(OpenCV QUIET COMPONENTS core imgproc)
+if(OpenCV_FOUND)
+  add_library(spite_d_perception
+    src/perception/uv_detector.cpp
+    src/perception/box_tracker.cpp
+  )
+  target_link_libraries(spite_d_perception
+    PUBLIC spite_d_core opencv_core opencv_imgproc)
+else()
+  message(STATUS "spite_d: perception skipped (OpenCV not found)")
+endif()
+
+# ---------------------------------------------------------------------------
+# Offline tools
+# ---------------------------------------------------------------------------
+# build_roadmap needs OMPL (brew on macOS, ROS-provided on Linux). The
+# roadmap graph is extracted via ompl::base::PlannerData, so any OMPL
+# build works regardless of its Boost version.
+find_package(ompl CONFIG QUIET)
+if(SPITE_D_HAVE_OPEN_SPITE AND ompl_FOUND)
+  add_executable(build_roadmap tools/build_roadmap.cpp)
+  target_link_libraries(build_roadmap
+    PRIVATE spite_d_planner spite_d_validity ompl::ompl)
+else()
+  message(STATUS "spite_d: build_roadmap tool skipped (needs open-spite + OMPL)")
+endif()
+
+# Terminal demo of the dynamic-validity loop; needs only open-spite.
+if(SPITE_D_HAVE_OPEN_SPITE)
+  add_executable(demo_dynamic tools/demo_dynamic.cpp)
+  target_link_libraries(demo_dynamic
+    PRIVATE spite_d_planner spite_d_trajectory spite_d_validity)
+endif()
+
+# ---------------------------------------------------------------------------
+# Tests (core mode and ROS mode)
+# ---------------------------------------------------------------------------
+enable_testing()
+add_subdirectory(tests)
+
+# ---------------------------------------------------------------------------
+# ROS mode only: interfaces, nodes, install rules
+# ---------------------------------------------------------------------------
+if(ament_cmake_FOUND)
+  find_package(rosidl_default_generators REQUIRED)
+  find_package(std_msgs REQUIRED)
+  find_package(geometry_msgs REQUIRED)
+  find_package(builtin_interfaces REQUIRED)
+
+  rosidl_generate_interfaces(${PROJECT_NAME}
+    "msg/ObstacleState.msg"
+    "msg/ObstacleArray.msg"
+    "msg/PredictedTrajectory.msg"
+    "msg/PredictedTrajectoryArray.msg"
+    DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
+  )
+
+  find_package(rclcpp REQUIRED)
+  find_package(sensor_msgs REQUIRED)
+  find_package(nav_msgs REQUIRED)
+
+  rosidl_get_typesupport_target(cpp_typesupport_target ${PROJECT_NAME}
+                                rosidl_typesupport_cpp)
+
+  if(TARGET spite_d_perception)
+    add_executable(perception_node src/nodes/perception_node.cpp)
+    target_link_libraries(perception_node
+      PRIVATE spite_d_perception "${cpp_typesupport_target}")
+    ament_target_dependencies(perception_node rclcpp sensor_msgs)
+    install(TARGETS perception_node DESTINATION lib/${PROJECT_NAME})
+  endif()
+
+  add_executable(prediction_node src/nodes/prediction_node.cpp)
+  target_link_libraries(prediction_node
+    PRIVATE spite_d_trajectory "${cpp_typesupport_target}")
+  ament_target_dependencies(prediction_node rclcpp)
+  install(TARGETS prediction_node DESTINATION lib/${PROJECT_NAME})
+
+  if(SPITE_D_HAVE_OPEN_SPITE)
+    add_executable(validity_node src/nodes/validity_node.cpp)
+    target_link_libraries(validity_node
+      PRIVATE spite_d_validity spite_d_planner "${cpp_typesupport_target}")
+    ament_target_dependencies(validity_node rclcpp nav_msgs)
+    install(TARGETS validity_node DESTINATION lib/${PROJECT_NAME})
+
+    if(TARGET build_roadmap)
+      install(TARGETS build_roadmap DESTINATION lib/${PROJECT_NAME})
+    endif()
+  endif()
+
+  install(DIRECTORY launch gazebo rviz
+          DESTINATION share/${PROJECT_NAME})
+  install(DIRECTORY include/ DESTINATION include)
+
+  ament_export_include_directories(include)
+  ament_package()
+endif()

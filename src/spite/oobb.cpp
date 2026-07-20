@@ -1,1 +1,0 @@
-// spite/oobb.cpp

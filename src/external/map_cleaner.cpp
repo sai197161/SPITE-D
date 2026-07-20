@@ -1,1 +1,0 @@
-// external/map_cleaner.cpp
