@@ -9,6 +9,7 @@
 // in the spite module.
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 

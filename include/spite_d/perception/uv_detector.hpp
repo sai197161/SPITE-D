@@ -23,6 +23,7 @@
 
 #include <opencv2/core.hpp>
 
+#include <cstddef>
 #include <vector>
 
 namespace spite_d {
