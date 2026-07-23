@@ -79,11 +79,34 @@ std::unique_ptr<DynamicRoadmapTool> LoadDrm(const std::string& dir) {
   return drm;
 }
 
+/// Obstacle parameters scaled to the roadmap's workspace so the same
+/// demo works for a 10m box world and a ~1.7m arm reach alike.
+struct Scenario {
+  Vec3 aimPoint;
+  double obstacleHalf;
+  double speed;
+
+  static Scenario From(const RoadmapGraph& graph, const Vec3& aim) {
+    Vec3 lo{1e30, 1e30, 1e30}, hi{-1e30, -1e30, -1e30};
+    for (const auto& v : graph.vertices)
+      for (int a = 0; a < 3; ++a) {
+        lo[a] = std::min(lo[a], v.position[a]);
+        hi[a] = std::max(hi[a], v.position[a]);
+      }
+    const double diag = std::sqrt(std::pow(hi[0] - lo[0], 2) +
+                                  std::pow(hi[1] - lo[1], 2) +
+                                  std::pow(hi[2] - lo[2], 2));
+    // Ratios chosen to reproduce the original box-world scenario
+    // (diag ~17 -> half 0.4, speed 1.2).
+    return {aim, 0.024 * diag, 0.07 * diag};
+  }
+};
+
 /// Runs one mode over the shared scenario; the obstacle is aimed at the
 /// midpoint of the initial path and follows constant velocity exactly.
 ModeResult RunMode(const std::string& name, const Options& opt,
                    const RoadmapGraph& graph, size_t start, size_t goal,
-                   const Vec3& aimPoint) {
+                   const Scenario& scenario) {
   ModeResult result;
   result.name = name;
 
@@ -106,9 +129,11 @@ ModeResult RunMode(const std::string& name, const Options& opt,
 
   TrackedObstacle track;
   track.id = 1;
-  track.velocity = {0.0, 1.2, 0.0};
-  track.halfExtents = {0.4, 0.4, 0.4};
-  track.positionStd = {0.05, 0.05, 0.05};
+  track.velocity = {0.0, scenario.speed, 0.0};
+  track.halfExtents = {scenario.obstacleHalf, scenario.obstacleHalf,
+                       scenario.obstacleHalf};
+  const double std0 = 0.125 * scenario.obstacleHalf;
+  track.positionStd = {std0, std0, std0};
 
   std::vector<size_t> path = planner.Plan(start, goal, isValid);
 
@@ -119,8 +144,11 @@ ModeResult RunMode(const std::string& name, const Options& opt,
   for (int f = 0; f < opt.frames; ++f) {
     const double t = f / opt.hz;
     track.stamp = t;
-    track.pose.translation = {aimPoint[0], (aimPoint[1] - 1.5) + 1.2 * t,
-                              aimPoint[2]};
+    // Start 1.25 s of travel before the aim point, whatever the scale.
+    track.pose.translation = {scenario.aimPoint[0],
+                              (scenario.aimPoint[1] - 1.25 * scenario.speed) +
+                                  scenario.speed * t,
+                              scenario.aimPoint[2]};
 
     const auto t0 = std::chrono::steady_clock::now();
     if (useSpans) {
@@ -216,16 +244,19 @@ int main(int argc, char** argv) {
     }
     aimPoint = graph.vertices[path[path.size() / 2]].position;
   }
-  std::printf("query: %zu -> %zu, obstacle aimed at (%.1f, %.1f, %.1f)\n\n",
-              start, goal, aimPoint[0], aimPoint[1], aimPoint[2]);
+  const Scenario scenario = Scenario::From(graph, aimPoint);
+  std::printf("query: %zu -> %zu, obstacle half=%.2f speed=%.2f aimed at "
+              "(%.2f, %.2f, %.2f)\n\n",
+              start, goal, scenario.obstacleHalf, scenario.speed, aimPoint[0],
+              aimPoint[1], aimPoint[2]);
 
   std::vector<ModeResult> results;
   if (opt.mode == "baseline" || opt.mode == "both")
-    results.push_back(RunMode("baseline", opt, graph, start, goal, aimPoint));
+    results.push_back(RunMode("baseline", opt, graph, start, goal, scenario));
   if (opt.mode == "spans" || opt.mode == "both") {
     std::string name = "spans";
     if (opt.slices > 1) name += "(k=" + std::to_string(opt.slices) + ")";
-    results.push_back(RunMode(name, opt, graph, start, goal, aimPoint));
+    results.push_back(RunMode(name, opt, graph, start, goal, scenario));
   }
 
   std::printf("%-11s %7s %11s %9s %8s %26s\n", "mode", "frames", "geom-passes",

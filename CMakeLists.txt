@@ -92,6 +92,19 @@ if(SPITE_D_HAVE_OPEN_SPITE AND ompl_FOUND)
   add_executable(build_roadmap tools/build_roadmap.cpp)
   target_link_libraries(build_roadmap
     PRIVATE spite_d_planner spite_d_validity ompl::ompl)
+
+  # UR5 variant: joint-space PRM with per-link approximations. FK header
+  # comes from open-spite's examples; needs Eigen.
+  find_package(Eigen3 CONFIG QUIET)
+  if(Eigen3_FOUND)
+    add_executable(build_roadmap_ur5 tools/build_roadmap_ur5.cpp)
+    target_include_directories(build_roadmap_ur5
+      PRIVATE ${SPITE_D_OPEN_SPITE_DIR}/examples)
+    target_link_libraries(build_roadmap_ur5
+      PRIVATE spite_d_planner spite_d_validity ompl::ompl Eigen3::Eigen)
+  else()
+    message(STATUS "spite_d: build_roadmap_ur5 skipped (needs Eigen3)")
+  endif()
 else()
   message(STATUS "spite_d: build_roadmap tool skipped (needs open-spite + OMPL)")
 endif()
