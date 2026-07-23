@@ -28,8 +28,9 @@ void SpanPipeline::Update(const std::vector<TrackedObstacle>& tracks) {
   }
 
   // Only rebuilt slots get marked dirty; ValidityServer::Update runs
-  // the RGG pass for those alone (no-op reconciliation otherwise).
-  m_server.Update(rebuilds);
+  // the RGG pass for those alone. On fully-conforming frames no slot
+  // changed, so even the reconciliation sweep is skippable.
+  if (!rebuilds.empty()) m_server.Update(rebuilds);
 }
 
 void SpanPipeline::Forget(int32_t obstacleId) {

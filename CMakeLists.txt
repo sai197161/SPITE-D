@@ -100,7 +100,8 @@ endif()
 if(SPITE_D_HAVE_OPEN_SPITE)
   add_executable(demo_dynamic tools/demo_dynamic.cpp)
   target_link_libraries(demo_dynamic
-    PRIVATE spite_d_planner spite_d_trajectory spite_d_validity)
+    PRIVATE spite_d_dynamic_map spite_d_planner spite_d_trajectory
+            spite_d_validity)
 endif()
 
 # ---------------------------------------------------------------------------
