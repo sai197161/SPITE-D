@@ -47,44 +47,29 @@ struct ValidityServer::Impl {
   std::unique_ptr<DynamicRoadmapTool> drm;
   Params params;
   std::unordered_map<int32_t, size_t> trackToSlot;
+  /// Slice-mode slots, keyed by (track id, slice index).
+  std::map<std::pair<int32_t, size_t>, size_t> sliceSlots;
   size_t nextSlot{0};
-};
 
-ValidityServer::ValidityServer(std::unique_ptr<DynamicRoadmapTool> drm,
-                               Params params)
-    : m_impl(new Impl{std::move(drm), params, {}, 0}) {}
-
-ValidityServer::~ValidityServer() = default;
-
-void ValidityServer::Update(
-    const std::vector<PredictedTrajectory>& predictions) {
-  auto& impl = *m_impl;
-
-  for (const PredictedTrajectory& traj : predictions) {
-    if (traj.poses.empty()) continue;
-
-    auto [it, inserted] = impl.trackToSlot.try_emplace(traj.id, impl.nextSlot);
-    if (inserted) ++impl.nextSlot;
-    const size_t slot = it->second;
-
-    // Over-approximation: OBB of the predicted OBB corners across the
-    // horizon, each sample inflated by +k*sigma.
+  /// Build one slot's SPITE geometry from one trajectory (whole-horizon
+  /// or a slice -- same +/-k*sigma construction either way).
+  void BuildSlotGeometry(size_t slot, const PredictedTrajectory& traj) {
+    // Over-approximation: OBB of the predicted OBB corners, +k*sigma.
     open_spite::PointCloud3d cloud;
     cloud.reserve(traj.poses.size() * 8);
     for (size_t i = 0; i < traj.poses.size(); ++i) {
       Vec3 half = traj.halfExtents;
       if (i < traj.positionStd.size())
         for (int a = 0; a < 3; ++a)
-          half[a] += impl.params.sigmaGain * traj.positionStd[i][a];
+          half[a] += params.sigmaGain * traj.positionStd[i][a];
       AppendCorners(traj.poses[i], half, cloud);
     }
     OrientedBoundingBox obb;
     open_spite::GetBoundingBox(cloud, obb);
-    impl.drm->UpdateObstacleOBB(slot, obb);
+    drm->UpdateObstacleOBB(slot, obb);
 
-    // Under-approximation: the obstacle's inscribed sphere placed at
-    // each predicted center, deflated by -k*sigma. Samples whose
-    // deflated radius vanishes contribute nothing (no false REDs).
+    // Under-approximation: inscribed spheres along the path, -k*sigma;
+    // vanished radii contribute nothing (no false REDs).
     const double baseRadius = *std::min_element(traj.halfExtents.begin(),
                                                 traj.halfExtents.end());
     std::vector<DynamicRoadmapTool::Sphere> spheres;
@@ -94,33 +79,92 @@ void ValidityServer::Update(
       if (i < traj.positionStd.size())
         sigma = *std::max_element(traj.positionStd[i].begin(),
                                   traj.positionStd[i].end());
-      const double radius = baseRadius - impl.params.sigmaGain * sigma;
+      const double radius = baseRadius - params.sigmaGain * sigma;
       if (radius <= 0.0) continue;
       const auto& t = traj.poses[i].translation;
       spheres.push_back({Point3d(t[0], t[1], t[2]), radius});
     }
-    impl.drm->UpdateObstacleSpheres(slot, spheres);
+    drm->UpdateObstacleSpheres(slot, spheres);
+  }
+
+  /// Empty a slot so reconciliation drops its contributions. (A far
+  /// AABB, not a default OBB: cornerless OBBs crash open-spite queries.)
+  void ParkSlot(size_t slot) {
+    constexpr double kFar = 1e9;
+    drm->UpdateObstacleAABB(
+        slot, DynamicRoadmapTool::Box3d(Point3d(kFar, kFar, kFar),
+                                        Point3d(kFar + 1, kFar + 1, kFar + 1)));
+    drm->UpdateObstacleSpheres(slot, {});
+  }
+};
+
+ValidityServer::ValidityServer(std::unique_ptr<DynamicRoadmapTool> drm,
+                               Params params)
+    : m_impl(new Impl{std::move(drm), params, {}, {}, 0}) {}
+
+ValidityServer::~ValidityServer() = default;
+
+void ValidityServer::Update(
+    const std::vector<PredictedTrajectory>& predictions) {
+  auto& impl = *m_impl;
+
+  for (const PredictedTrajectory& traj : predictions) {
+    if (traj.poses.empty()) continue;
+    auto [it, inserted] = impl.trackToSlot.try_emplace(traj.id, impl.nextSlot);
+    if (inserted) ++impl.nextSlot;
+    impl.BuildSlotGeometry(it->second, traj);
   }
 
   impl.drm->ShallowUpdate();
 }
 
+void ValidityServer::UpdateSlices(
+    int32_t obstacleId, const std::vector<PredictedTrajectory>& slices) {
+  auto& impl = *m_impl;
+  for (size_t s = 0; s < slices.size(); ++s) {
+    if (slices[s].poses.empty()) continue;
+    auto [it, inserted] =
+        impl.sliceSlots.try_emplace({obstacleId, s}, impl.nextSlot);
+    if (inserted) ++impl.nextSlot;
+    impl.BuildSlotGeometry(it->second, slices[s]);
+  }
+  impl.drm->ShallowUpdate();
+}
+
+void ValidityServer::ExpireSlices(int32_t obstacleId,
+                                  size_t firstActiveSlice) {
+  auto& impl = *m_impl;
+  bool any = false;
+  for (auto& [key, slot] : impl.sliceSlots) {
+    if (key.first != obstacleId || key.second >= firstActiveSlice) continue;
+    impl.ParkSlot(slot);
+    any = true;
+  }
+  // Bookkeeping only: parked slots are re-reconciled, no tree queries
+  // against real geometry. This is the cheap-expiry win of slicing.
+  if (any) impl.drm->ShallowUpdate();
+}
+
 void ValidityServer::Forget(int32_t obstacleId) {
   auto& impl = *m_impl;
-  auto it = impl.trackToSlot.find(obstacleId);
-  if (it == impl.trackToSlot.end()) return;
+  bool any = false;
 
-  // Park the slot's geometry far outside any workspace so reconciliation
-  // drops all of its contributions, re-validating anything only it was
-  // blocking. (An AABB, not a default OBB: open-spite's OBB queries
-  // assume corners exist and crash on a cornerless box.)
-  constexpr double kFar = 1e9;
-  impl.drm->UpdateObstacleAABB(
-      it->second, DynamicRoadmapTool::Box3d(Point3d(kFar, kFar, kFar),
-                                            Point3d(kFar + 1, kFar + 1, kFar + 1)));
-  impl.drm->UpdateObstacleSpheres(it->second, {});
-  impl.drm->ShallowUpdate();
-  impl.trackToSlot.erase(it);
+  auto it = impl.trackToSlot.find(obstacleId);
+  if (it != impl.trackToSlot.end()) {
+    impl.ParkSlot(it->second);
+    impl.trackToSlot.erase(it);
+    any = true;
+  }
+  for (auto sit = impl.sliceSlots.begin(); sit != impl.sliceSlots.end();) {
+    if (sit->first.first == obstacleId) {
+      impl.ParkSlot(sit->second);
+      sit = impl.sliceSlots.erase(sit);
+      any = true;
+    } else {
+      ++sit;
+    }
+  }
+  if (any) impl.drm->ShallowUpdate();
 }
 
 ValidityServer::Validity ValidityServer::GetVertexValidity(size_t vid) const {

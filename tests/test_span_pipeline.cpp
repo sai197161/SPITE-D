@@ -124,5 +124,33 @@ int main() {
   pipeline.Forget(7);
   assert(server.GetEdgeValidity(2, 3) == V::VALID);
 
+  // ---- Time-sliced mode (k=4): the corridor heals BEHIND the obstacle
+  // by slice expiry alone -- zero geometry rebuilds -- which the
+  // union-over-horizon span above could never do (it stays INVALID for
+  // the whole horizon).
+  SpanPipeline::Params slicedParams = params;
+  slicedParams.slices = 4;
+  slicedParams.span.refreshFraction = 1.0;  // Isolate expiry from refresh.
+  SpanPipeline sliced(predictor, server, slicedParams);
+
+  TrackedObstacle track2 = track;
+  track2.id = 8;
+  for (int f = 0; f <= 31; ++f) {  // t = 0 .. 3.1
+    track2.stamp = f * kDt;
+    track2.pose.translation = {1.0, -2.0 + 1.2 * track2.stamp, 0.0};
+    sliced.Update({track2});
+    if (f <= 25)  // While a blocking slice is still active: certified red.
+      assert(server.GetEdgeValidity(0, 1) == V::INVALID);
+  }
+  // t = 3.1: slices 0-2 have lapsed; only slice 3 (obstacle far past the
+  // corridor) remains -> the corridor is open again...
+  assert(server.GetEdgeValidity(0, 1) == V::VALID);
+  // ...and it cost one span build total, the rest was bookkeeping.
+  assert(sliced.GetStats().rebuilds == 1);
+  assert(sliced.GetStats().expiries == 3);
+
+  sliced.Forget(8);
+  assert(server.GetEdgeValidity(0, 1) == V::VALID);
+
   return 0;
 }

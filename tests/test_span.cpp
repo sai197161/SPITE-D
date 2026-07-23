@@ -63,5 +63,24 @@ int main() {
   assert(!span.NeedsRefresh(11.3));
   assert(span.NeedsRefresh(11.5));
 
+  // ---- Slicing: 5 samples over [10,12], k=2 -> 3 samples each, the
+  // middle sample (t=11) shared by both slices (no geometric gap).
+  const auto slices = SliceTrajectory(traj, 2);
+  assert(slices.size() == 2);
+  assert(slices[0].stamps.size() == 3 && slices[1].stamps.size() == 3);
+  assert(slices[0].stamps.back() == 11.0 && slices[1].stamps.front() == 11.0);
+  assert(slices[0].poses.back().translation[0] ==
+         slices[1].poses.front().translation[0]);
+
+  // k=1 passthrough.
+  assert(SliceTrajectory(traj, 1).size() == 1);
+
+  // Slice indexing over [10,12] with k=4 (width 0.5).
+  assert(SliceIndexAt(9.0, 10.0, 12.0, 4) == 0);   // clamped low
+  assert(SliceIndexAt(10.2, 10.0, 12.0, 4) == 0);
+  assert(SliceIndexAt(10.6, 10.0, 12.0, 4) == 1);
+  assert(SliceIndexAt(11.9, 10.0, 12.0, 4) == 3);
+  assert(SliceIndexAt(13.0, 10.0, 12.0, 4) == 3);  // clamped high
+
   return 0;
 }

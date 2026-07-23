@@ -41,6 +41,12 @@ class SpanPipeline {
     SpanParams span;
     double horizon{2.0};
     double dt{0.2};
+    /// Time slices per span. 1 = union-over-horizon; larger k trades
+    /// extra per-rebuild geometry passes for cheap expiry: edges
+    /// blocked only by the obstacle's past heal as slices lapse,
+    /// without any geometry rebuild. k -> horizon/dt degenerates to
+    /// per-timestep checking (the frame-by-frame baseline).
+    size_t slices{1};
   };
 
   struct Stats {
@@ -48,6 +54,7 @@ class SpanPipeline {
     size_t observations{0}; ///< Obstacle observations processed.
     size_t rebuilds{0};     ///< Spans (re)built = expensive path taken.
     size_t conforming{0};   ///< Observations absorbed by an existing span.
+    size_t expiries{0};     ///< Slice lapses (bookkeeping-only healing).
   };
 
   /// Borrows the predictor and validity server (caller owns both).
@@ -66,10 +73,15 @@ class SpanPipeline {
   const Span* GetSpan(int32_t obstacleId) const;
 
  private:
+  struct TrackedSpan {
+    Span span;
+    size_t firstActiveSlice{0};
+  };
+
   const Predictor& m_predictor;
   ValidityServer& m_server;
   Params m_params;
-  std::map<int32_t, Span> m_spans;
+  std::map<int32_t, TrackedSpan> m_spans;
   Stats m_stats;
 };
 

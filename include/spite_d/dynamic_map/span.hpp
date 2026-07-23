@@ -35,6 +35,16 @@ struct SpanParams {
   double refreshFraction{0.7};
 };
 
+/// Split a sampled trajectory into k contiguous sub-trajectories of
+/// equal time extent. Boundary samples are shared by both neighboring
+/// slices so their geometries leave no gap. k=1 returns {trajectory}.
+std::vector<PredictedTrajectory> SliceTrajectory(
+    const PredictedTrajectory& trajectory, size_t k);
+
+/// Index of the slice containing time t for a k-sliced horizon
+/// [start, end] (clamped to [0, k-1]).
+size_t SliceIndexAt(double t, double start, double end, size_t k);
+
 /// One obstacle's frozen prediction over [StartTime, EndTime].
 class Span {
  public:

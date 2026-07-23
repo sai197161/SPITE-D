@@ -43,12 +43,14 @@ struct Options {
   int frames = 40;
   double hz = 10.0;
   std::string mode = "both";
+  size_t slices = 1;
   bool trace = false;
 };
 
 struct ModeResult {
   std::string name;
   size_t geometryRebuilds = 0;
+  size_t expiries = 0;
   int replans = 0;
   std::vector<double> updateMs;
   std::vector<size_t> pathSizes;
@@ -94,8 +96,9 @@ ModeResult RunMode(const std::string& name, const Options& opt,
   spanParams.span.sigmaGain = kSigmaGain;
   spanParams.horizon = 2.0;
   spanParams.dt = 0.2;
+  spanParams.slices = opt.slices;
   SpanPipeline pipeline(predictor, server, spanParams);
-  const bool useSpans = name == "spans";
+  const bool useSpans = name.rfind("spans", 0) == 0;
 
   const auto isValid = [&server](size_t a, size_t b) {
     return server.GetEdgeValidity(a, b) != ValidityServer::Validity::INVALID;
@@ -151,8 +154,11 @@ ModeResult RunMode(const std::string& name, const Options& opt,
     }
   }
 
+  // In sliced mode each span rebuild constructs one geometry per slice.
   result.geometryRebuilds =
-      useSpans ? pipeline.GetStats().rebuilds : size_t(opt.frames);
+      useSpans ? pipeline.GetStats().rebuilds * std::max<size_t>(1, opt.slices)
+               : size_t(opt.frames);
+  result.expiries = useSpans ? pipeline.GetStats().expiries : 0;
   return result;
 }
 
@@ -165,6 +171,7 @@ int main(int argc, char** argv) {
     else if (!std::strcmp(argv[i], "--frames") && ++i < argc) opt.frames = std::atoi(argv[i]);
     else if (!std::strcmp(argv[i], "--hz") && ++i < argc) opt.hz = std::atof(argv[i]);
     else if (!std::strcmp(argv[i], "--mode") && ++i < argc) opt.mode = argv[i];
+    else if (!std::strcmp(argv[i], "--slices") && ++i < argc) opt.slices = std::atoi(argv[i]);
     else if (!std::strcmp(argv[i], "--trace")) opt.trace = true;
   }
   if (opt.dir.empty()) {
@@ -215,15 +222,18 @@ int main(int argc, char** argv) {
   std::vector<ModeResult> results;
   if (opt.mode == "baseline" || opt.mode == "both")
     results.push_back(RunMode("baseline", opt, graph, start, goal, aimPoint));
-  if (opt.mode == "spans" || opt.mode == "both")
-    results.push_back(RunMode("spans", opt, graph, start, goal, aimPoint));
+  if (opt.mode == "spans" || opt.mode == "both") {
+    std::string name = "spans";
+    if (opt.slices > 1) name += "(k=" + std::to_string(opt.slices) + ")";
+    results.push_back(RunMode(name, opt, graph, start, goal, aimPoint));
+  }
 
-  std::printf("%-9s %7s %14s %8s %26s\n", "mode", "frames", "geom-rebuilds",
-              "replans", "update ms mean/med/max");
+  std::printf("%-11s %7s %11s %9s %8s %26s\n", "mode", "frames", "geom-passes",
+              "expiries", "replans", "update ms mean/med/max");
   for (const auto& r : results)
-    std::printf("%-9s %7d %14zu %8d %12.3f /%7.3f /%7.3f\n", r.name.c_str(),
-                opt.frames, r.geometryRebuilds, r.replans, r.Mean(),
-                r.Median(), r.Max());
+    std::printf("%-11s %7d %11zu %9zu %8d %12.3f /%7.3f /%7.3f\n",
+                r.name.c_str(), opt.frames, r.geometryRebuilds, r.expiries,
+                r.replans, r.Mean(), r.Median(), r.Max());
 
   if (results.size() == 2) {
     const auto& base = results[0];

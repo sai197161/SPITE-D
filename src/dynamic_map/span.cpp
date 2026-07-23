@@ -5,6 +5,45 @@
 
 namespace spite_d {
 
+std::vector<PredictedTrajectory> SliceTrajectory(
+    const PredictedTrajectory& trajectory, size_t k) {
+  if (k <= 1 || trajectory.stamps.size() < 2) return {trajectory};
+
+  const double start = trajectory.stamps.front();
+  const double end = trajectory.stamps.back();
+  const double width = (end - start) / double(k);
+
+  std::vector<PredictedTrajectory> slices(k);
+  for (size_t s = 0; s < k; ++s) {
+    slices[s].id = trajectory.id;
+    slices[s].halfExtents = trajectory.halfExtents;
+  }
+  for (size_t i = 0; i < trajectory.stamps.size(); ++i) {
+    const double t = trajectory.stamps[i];
+    // A sample belongs to every slice whose closed interval contains it
+    // (boundary samples land in two slices; no geometric gaps).
+    const double rel = (t - start) / width;
+    const size_t lo =
+        std::min(size_t(std::floor(rel - 1e-9 < 0 ? 0 : rel - 1e-9)), k - 1);
+    const size_t hi = std::min(size_t(std::floor(rel + 1e-9)), k - 1);
+    for (size_t s = lo; s <= hi; ++s) {
+      slices[s].stamps.push_back(t);
+      slices[s].poses.push_back(trajectory.poses[i]);
+      if (i < trajectory.positionStd.size())
+        slices[s].positionStd.push_back(trajectory.positionStd[i]);
+    }
+  }
+  return slices;
+}
+
+size_t SliceIndexAt(double t, double start, double end, size_t k) {
+  if (k <= 1 || end <= start) return 0;
+  const double rel = (t - start) / (end - start) * double(k);
+  if (rel <= 0.0) return 0;
+  const size_t idx = size_t(rel);
+  return std::min(idx, k - 1);
+}
+
 Span::Span(PredictedTrajectory trajectory, SpanParams params)
     : m_traj(std::move(trajectory)), m_params(params) {}
 

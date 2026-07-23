@@ -48,8 +48,20 @@ class ValidityServer {
   /// are treated as unchanged (obstacle removal handled via Forget()).
   void Update(const std::vector<PredictedTrajectory>& predictions);
 
+  /// Time-sliced mode: register per-slice geometries for one obstacle
+  /// (slice index = position in the vector). Each slice occupies its
+  /// own slot, so classifications carry implicit intervals.
+  void UpdateSlices(int32_t obstacleId,
+                    const std::vector<PredictedTrajectory>& slices);
+
+  /// Drop the contributions of all slices before firstActiveSlice --
+  /// pure bookkeeping (no geometry queries), so edges blocked only by
+  /// the obstacle's past heal for free as time advances.
+  void ExpireSlices(int32_t obstacleId, size_t firstActiveSlice);
+
   /// Drop a track (target lost / left the workspace) and re-validate
-  /// the roadmap elements it was invalidating.
+  /// the roadmap elements it was invalidating (whole-horizon and
+  /// slice slots alike).
   void Forget(int32_t obstacleId);
 
   Validity GetVertexValidity(size_t vid) const;
