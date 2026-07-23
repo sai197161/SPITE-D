@@ -55,6 +55,18 @@ if(SPITE_D_HAVE_OPEN_SPITE)
   target_link_libraries(spite_d_validity PUBLIC spite_d_core open_spite)
 endif()
 
+# Spans (the temporal contribution): pure span math always builds;
+# the amortization pipeline needs the validity server.
+add_library(spite_d_dynamic_map
+  src/dynamic_map/span.cpp
+)
+target_link_libraries(spite_d_dynamic_map PUBLIC spite_d_core)
+if(SPITE_D_HAVE_OPEN_SPITE)
+  target_sources(spite_d_dynamic_map PRIVATE src/dynamic_map/span_pipeline.cpp)
+  target_link_libraries(spite_d_dynamic_map
+    PUBLIC spite_d_validity spite_d_trajectory)
+endif()
+
 # Perception core: UV-map detector + box tracker (map_manager port).
 # OpenCV: brew on macOS, ROS-provided on Linux.
 find_package(OpenCV QUIET COMPONENTS core imgproc)
