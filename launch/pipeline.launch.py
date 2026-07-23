@@ -17,7 +17,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, TextSubstitution
+from launch.substitutions import LaunchConfiguration, PythonExpression, TextSubstitution
 from launch_ros.actions import Node
 
 
@@ -33,6 +33,10 @@ def generate_launch_description():
     geoms_arg = DeclareLaunchArgument('roadmap_geoms')
     start_arg = DeclareLaunchArgument('start_vid', default_value='0')
     goal_arg = DeclareLaunchArgument('goal_vid', default_value='1')
+    headless_arg = DeclareLaunchArgument(
+        'headless', default_value='true',
+        description='Run gz server-only with headless rendering (no GUI); '
+                    'set false to open the Gazebo window')
 
     world_path = [
         TextSubstitution(text=os.path.join(pkg_share, 'gazebo', 'worlds', '')),
@@ -40,12 +44,18 @@ def generate_launch_description():
         TextSubstitution(text='.sdf'),
     ]
 
+    # '-r' = run immediately; headless adds server-only + offscreen rendering
+    # (required on a machine with no display, e.g. driving gz over ssh).
+    gz_flags = PythonExpression([
+        '"-r -s --headless-rendering " if "', LaunchConfiguration('headless'),
+        '" == "true" else "-r "'])
+
     return LaunchDescription([
-        world_arg, graph_arg, geoms_arg, start_arg, goal_arg,
+        world_arg, graph_arg, geoms_arg, start_arg, goal_arg, headless_arg,
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(gz_launch),
-            launch_arguments={'gz_args': ['-r ', *world_path]}.items()),
+            launch_arguments={'gz_args': [gz_flags, *world_path]}.items()),
 
         Node(package='ros_gz_bridge', executable='parameter_bridge',
              output='screen',
